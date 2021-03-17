@@ -219,7 +219,7 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
     protected void writeSingleRecordInternal(Row row) throws WriteRecordException {
         int index = 0;
         try {
-            for (; index < row.getArity(); index++) {
+            for (; index < column.size(); index++) {
                 preparedStatement.setObject(index+1, getField(row, index));
             }
 
@@ -255,7 +255,7 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
     protected void writeMultipleRecordsInternal() throws Exception {
         try {
             for (Row row : rows) {
-                for (int index = 0; index < row.getArity(); index++) {
+                for (int index = 0; index < column.size(); index++) {
                     preparedStatement.setObject(index+1, getField(row, index));
                 }
                 preparedStatement.addBatch();
@@ -352,7 +352,25 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
      * @return
      */
     protected Object getField(Row row, int index) {
-        Object field = row.getField(index);
+	Object field = index<row.getArity()?row.getField(index):null;
+
+	// fix kafka 解析生成row数据格式field都是放的map结构而不是直接的值
+	String columnName = column.get(index);
+        for(int i=0;i<row.getArity();i++){
+	  Object fieldI = row.getField(i);
+	  if(!(fieldI instanceof Map)){
+	     break;
+	  } else if(fieldI!=null && ((Map)fieldI).containsKey(columnName)){
+	       field = ((Map)fieldI).get(columnName);
+	       break;
+	  }
+	}
+
+	//目前线上postgres不支持hstore, 返回空
+	if(preparedStatement.getClass().getSimpleName().equalsIgnoreCase("PgPreparedStatement") && field instanceof Map){
+	  field = null;
+	}
+
         String type = columnType.get(index);
 
         //field为空字符串，且写入目标类型不为字符串类型的字段，则将object设置为null
@@ -455,7 +473,7 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
      * @return
      */
     protected String getTable(){
-        return table;
+        return table.toLowerCase();
     }
 
     public void setSchema(String schema){
