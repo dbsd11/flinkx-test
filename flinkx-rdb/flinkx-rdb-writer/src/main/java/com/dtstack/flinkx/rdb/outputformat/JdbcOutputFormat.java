@@ -126,17 +126,18 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
     protected static List<String> STRING_TYPES = Arrays.asList("CHAR", "VARCHAR","TINYBLOB","TINYTEXT","BLOB","TEXT", "MEDIUMBLOB", "MEDIUMTEXT", "LONGBLOB", "LONGTEXT");
 
     protected PreparedStatement prepareTemplates() throws SQLException {
+	List<String> dbColumnList = column.stream().map(col->getCleanDbColumnName(col)).collect(java.util.stream.Collectors.toList());
         if(CollectionUtils.isEmpty(fullColumn)) {
-            fullColumn = column;
+            fullColumn = dbColumnList;
         }
 
         String singleSql;
         if (EWriteMode.INSERT.name().equalsIgnoreCase(mode)) {
-            singleSql = databaseInterface.getInsertStatement(column, table);
+            singleSql = databaseInterface.getInsertStatement(dbColumnList, table);
         } else if (EWriteMode.REPLACE.name().equalsIgnoreCase(mode)) {
-            singleSql = databaseInterface.getReplaceStatement(column, fullColumn, table, updateKey);
+            singleSql = databaseInterface.getReplaceStatement(dbColumnList, fullColumn, table, updateKey);
         } else if (EWriteMode.UPDATE.name().equalsIgnoreCase(mode)) {
-            singleSql = databaseInterface.getUpsertStatement(column, table, updateKey);
+            singleSql = databaseInterface.getUpsertStatement(dbColumnList, table, updateKey);
         } else {
             throw new IllegalArgumentException("Unknown write mode:" + mode);
         }
@@ -155,6 +156,9 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
             //默认关闭事务自动提交，手动控制事务
             dbConn.setAutoCommit(false);
 
+	    if(table.contains(".")){
+	       setSchema(table.substring(0, table.indexOf(".")));
+	    }
             if(CollectionUtils.isEmpty(fullColumn)) {
                 fullColumn = probeFullColumns(getTable(), dbConn);
             }
@@ -171,7 +175,7 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
 
             for(String col : column) {
                 for (int i = 0; i < fullColumn.size(); i++) {
-                    if (col.equalsIgnoreCase(fullColumn.get(i))){
+                    if (getCleanDbColumnName(col).equalsIgnoreCase(fullColumn.get(i))){
                         columnType.add(fullColumnType.get(i));
                         break;
                     }
@@ -355,15 +359,16 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
 	Object field = index<row.getArity()?row.getField(index):null;
 
 	// fix kafka 解析生成row数据格式field都是放的map结构而不是直接的值
-	String columnName = column.get(index);
-        for(int i=0;i<row.getArity();i++){
-	  Object fieldI = row.getField(i);
-	  if(!(fieldI instanceof Map)){
-	     break;
-	  } else if(fieldI!=null && ((Map)fieldI).containsKey(columnName)){
-	       field = ((Map)fieldI).get(columnName);
-	       break;
-	  }
+	if(row.getField(0) instanceof Map){
+	   Map rowMap = (Map)row.getField(0);
+	   String columnName = column.get(index);
+	   field = rowMap.get(columnName);
+
+	   if(field != null && (field instanceof Map)) {
+	     try{
+	        field = com.dtstack.flinkx.util.MapUtil.writeValueAsString(field);
+	     }catch(Exception e){}
+	   }
 	}
 
 	//目前线上postgres不支持hstore, 返回空
@@ -395,7 +400,7 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
 
     protected List<String> probeFullColumns(String table, Connection dbConn) throws SQLException {
         List<String> ret = new ArrayList<>();
-        ResultSet rs = dbConn.getMetaData().getColumns(null, null, table, null);
+        ResultSet rs = dbConn.getMetaData().getColumns(null, schema, table, null);
         while(rs.next()) {
             ret.add(rs.getString("COLUMN_NAME"));
         }
@@ -404,7 +409,7 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
 
     protected Map<String, List<String>> probePrimaryKeys(String table, Connection dbConn) throws SQLException {
         Map<String, List<String>> map = new HashMap<>(16);
-        ResultSet rs = dbConn.getMetaData().getIndexInfo(null, null, table, true, false);
+        ResultSet rs = dbConn.getMetaData().getIndexInfo(null, schema, table, true, false);
         while(rs.next()) {
             String indexName = rs.getString("INDEX_NAME");
             if(!map.containsKey(indexName)) {
@@ -473,10 +478,14 @@ public class JdbcOutputFormat extends BaseRichOutputFormat {
      * @return
      */
     protected String getTable(){
-        return table.toLowerCase();
+        return table.contains(".")?table.substring(table.indexOf(".")+1):table;
     }
 
     public void setSchema(String schema){
         this.schema = schema;
+    }
+
+    private String getCleanDbColumnName(String columnName){
+        return columnName.replaceAll("[`:]", "").toLowerCase();
     }
 }
